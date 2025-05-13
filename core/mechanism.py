@@ -34,6 +34,9 @@ class WuXingMechanism:
         self.criterion = criterion
         self.device = device if device is not None else next(model.parameters()).device
 
+        # Flag to detect dictionary-style dataloaders vs tuple-style
+        self.dict_style_dataloader = self._check_dataloader_style()
+
         # Store hooks and activations
         self.hooks = []
         self.activations = {}
@@ -58,6 +61,25 @@ class WuXingMechanism:
         # Store Wu Xing state
         self.current_state = None
         self._assess_wuxing_state()
+
+    def _check_dataloader_style(self) -> bool:
+        """
+        Check if dataloader provides dictionary-style batches or tuple-style batches
+
+        Returns:
+            True if dictionary-style, False if tuple-style
+        """
+        # Peek at the first item in the dataloader
+        for batch in self.dataloader:
+            if isinstance(batch, dict):
+                return True
+            elif isinstance(batch, (tuple, list)) and len(batch) == 2:
+                return False
+            # If it's another structure, assume it's custom and needs dictionary handling
+            return True
+
+        # Default to False if dataloader is empty
+        return False
 
     def _register_hooks(self):
         """Register hooks to capture activations and gradients"""
@@ -103,10 +125,18 @@ class WuXingMechanism:
         num_batches = 0
 
         with torch.no_grad():
-            for inputs, targets in self.dataloader:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-                outputs = self.model(inputs)
-                loss = self.criterion(outputs, targets)
+            for batch in self.dataloader:
+                if self.dict_style_dataloader:
+                    # Dictionary-style batch
+                    outputs = self.model(**{k: v.to(self.device) for k, v in batch.items() if k != "labels"})
+                    loss = self.criterion(outputs, batch)
+                else:
+                    # Tuple-style batch with (inputs, targets)
+                    inputs, targets = batch
+                    inputs, targets = inputs.to(self.device), targets.to(self.device)
+                    outputs = self.model(inputs)
+                    loss = self.criterion(outputs, targets)
+
                 total_loss += loss.item()
                 num_batches += 1
 
@@ -160,13 +190,32 @@ class WuXingMechanism:
         feature_stats = []
 
         with torch.no_grad():
-            for inputs, _ in self.dataloader:
-                inputs = inputs.to(self.device)
+            for batch in self.dataloader:
+                if self.dict_style_dataloader:
+                    # Dictionary-style batch
+                    input_ids = batch.get("input_ids", None)
+                    if input_ids is not None:
+                        inputs = input_ids.to(self.device)
+                    else:
+                        # Try to find first tensor in batch to use as input
+                        for k, v in batch.items():
+                            if isinstance(v, torch.Tensor) and k != "labels":
+                                inputs = v.to(self.device)
+                                break
+                else:
+                    # Tuple-style batch
+                    inputs, _ = batch
+                    inputs = inputs.to(self.device)
 
                 # Calculate feature statistics
                 if isinstance(inputs, torch.Tensor):
                     # Flatten except batch dimension
                     flat_inputs = inputs.view(inputs.size(0), -1)
+
+                    # Convert to float for variance calculation if needed
+                    if flat_inputs.dtype not in [torch.float, torch.double, torch.half, torch.complex64,
+                                                 torch.complex128]:
+                        flat_inputs = flat_inputs.float()
 
                     # Calculate variance per sample
                     var_per_sample = torch.var(flat_inputs, dim=1)
@@ -234,12 +283,29 @@ class WuXingMechanism:
 
         # Forward and backward pass to get gradients
         self.model.train()
-        for inputs, targets in self.dataloader:
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
-            self.model.zero_grad()
-            outputs = self.model(inputs)
-            loss = self.criterion(outputs, targets)
-            loss.backward()
+        for batch in self.dataloader:
+            if self.dict_style_dataloader:
+                # Dictionary-style batch
+                # Move all tensors to device
+                batch_on_device = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                                   for k, v in batch.items()}
+
+                # Extract input and target parts
+                input_dict = {k: v for k, v in batch_on_device.items() if k != "labels"}
+
+                self.model.zero_grad()
+                outputs = self.model(**input_dict)
+                loss = self.criterion(outputs, batch_on_device)
+                loss.backward()
+            else:
+                # Tuple-style batch
+                inputs, targets = batch
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+
+                self.model.zero_grad()
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, targets)
+                loss.backward()
 
             # Collect gradient magnitudes
             for param in self.model.parameters():
@@ -312,12 +378,30 @@ class WuXingMechanism:
 
         self.model.eval()
         with torch.no_grad():
-            for inputs, _ in self.dataloader:
-                inputs = inputs.to(self.device)
-                outputs = self.model(inputs)
+            for batch in self.dataloader:
+                if self.dict_style_dataloader:
+                    # Dictionary-style batch
+                    # Move all tensors to device
+                    input_dict = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                                  for k, v in batch.items() if k != "labels"}
+
+                    outputs = self.model(**input_dict)
+                else:
+                    # Tuple-style batch
+                    inputs, _ = batch
+                    inputs = inputs.to(self.device)
+                    outputs = self.model(inputs)
+
+                # If model returns a dictionary, get the logits
+                if isinstance(outputs, dict) and "logits" in outputs:
+                    outputs = outputs["logits"]
+
+                # Convert to float if needed
+                if hasattr(outputs, "dtype") and outputs.dtype not in [torch.float, torch.double, torch.half]:
+                    outputs = outputs.float()
 
                 # If using softmax outputs, measure confidence
-                if outputs.dim() > 1 and outputs.size(1) > 1:
+                if hasattr(outputs, "dim") and outputs.dim() > 1 and outputs.size(1) > 1:
                     # Apply softmax if not already done
                     if outputs.min() < 0 or outputs.max() > 1:
                         outputs = torch.softmax(outputs, dim=1)
@@ -381,12 +465,30 @@ class WuXingMechanism:
 
         # Forward and backward pass to set up gradients
         self.model.train()
-        for inputs, targets in self.dataloader:
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
-            self.model.zero_grad()
-            outputs = self.model(inputs)
-            loss = self.criterion(outputs, targets)
-            loss.backward()
+        for batch in self.dataloader:
+            if self.dict_style_dataloader:
+                # Dictionary-style batch
+                # Move all tensors to device
+                batch_on_device = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                                   for k, v in batch.items()}
+
+                # Extract input and target parts
+                input_dict = {k: v for k, v in batch_on_device.items() if k != "labels"}
+
+                self.model.zero_grad()
+                outputs = self.model(**input_dict)
+                loss = self.criterion(outputs, batch_on_device)
+                loss.backward()
+            else:
+                # Tuple-style batch
+                inputs, targets = batch
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+
+                self.model.zero_grad()
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, targets)
+                loss.backward()
+
             break
 
         # Calculate mechanism strength for each parameter
@@ -470,7 +572,12 @@ class WuXingMechanism:
         """
         # 1. Calculate rigidity based on gradient magnitude
         if param.grad is not None:
-            grad_magnitude = param.grad.abs().mean().item()
+            # Convert grad to float if needed
+            grad = param.grad
+            if grad.dtype not in [torch.float, torch.double, torch.half]:
+                grad = grad.float()
+
+            grad_magnitude = grad.abs().mean().item()
             rigidity = 1.0 / (1.0 + 10 * grad_magnitude)  # Inverse relationship
         else:
             rigidity = 0.8  # Default if no gradient
@@ -489,8 +596,13 @@ class WuXingMechanism:
         connectivity = min(1.0, connectivity)
 
         # 3. Calculate developmental stage based on parameter values
-        mean_value = param.abs().mean().item()
-        variance = param.var().item()
+        # Convert param to float if needed
+        p_data = param.data
+        if p_data.dtype not in [torch.float, torch.double, torch.half]:
+            p_data = p_data.float()
+
+        mean_value = p_data.abs().mean().item()
+        variance = p_data.var().item()
 
         if mean_value < 0.01:
             developmental_stage = 0.2  # Early stage
@@ -963,14 +1075,29 @@ class WuXingMechanism:
         activation_stats = {}
 
         with torch.no_grad():
-            for inputs, _ in self.dataloader:
-                inputs = inputs.to(self.device)
-                self.model(inputs)
+            for batch in self.dataloader:
+                if self.dict_style_dataloader:
+                    # Dictionary-style batch
+                    # Move all tensors to device
+                    input_dict = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                                  for k, v in batch.items() if k != "labels"}
+
+                    self.model(**input_dict)
+                else:
+                    # Tuple-style batch
+                    inputs, _ = batch
+                    inputs = inputs.to(self.device)
+                    self.model(inputs)
 
                 # Collect activation statistics
                 for name, activation in self.activations.items():
                     if name not in activation_stats:
                         activation_stats[name] = {'values': []}
+
+                    # Convert to float if needed
+                    if activation.dtype not in [torch.float, torch.double, torch.half, torch.complex64,
+                                                torch.complex128]:
+                        activation = activation.float()
 
                     act_mean = activation.mean().item()
                     activation_stats[name]['values'].append(act_mean)
