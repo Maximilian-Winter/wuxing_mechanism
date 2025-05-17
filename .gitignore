@@ -37,3 +37,6 @@ ENV/
 /examples/data/MNIST
 examples/mnist_wuxing_model.pt
 examples/output/mnist_samples.png
+/examples/data
+examples/cifar_wuxing_model.pt
+examples/output/cifar_samples.png
