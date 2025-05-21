@@ -308,7 +308,8 @@ class HuggingFaceTrainer:
                 self.logger.info("Applying WuXing intervention...")
 
                 # Reassess current state
-                self.mechanism._assess_wuxing_state()
+                current_elements = self.mechanism._assess_wuxing_state(epoch=epoch, total_epochs=num_epochs)
+                print(current_elements)
                 self.history['wuxing_states'].append(self.mechanism.current_state)
 
                 # Design and apply intervention
@@ -338,8 +339,8 @@ class HuggingFaceTrainer:
                     self.history['interventions'].append(None)
 
         # Final state assessment
-        self.mechanism._assess_wuxing_state()
-
+        self.mechanism._assess_wuxing_state(epoch=epoch, total_epochs=num_epochs)
+        self.history['wuxing_states'].append(self.mechanism.current_state)
         # Save final model if requested
         if output_dir:
             final_model_path = os.path.join(output_dir, "final_model")

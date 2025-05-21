@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import nn
 import numpy as np
@@ -146,22 +148,37 @@ class WuXingMechanism:
 
         return total_loss / max(1, num_batches)
 
-    def _assess_wuxing_state(self) -> WuXingStateVector:
-        """Assess the current Wu Xing state of the model"""
+    def _assess_wuxing_state(self, epoch=None, total_epochs=None):
+        """
+        Dynamically assess the current Wu Xing state with temporal awareness
+
+        Args:
+            epoch: Current epoch number
+            total_epochs: Total number of epochs in training
+
+        Returns:
+            WuXingStateVector representing current system state
+        """
+        # Calculate training progress (0 to 1)
+        if epoch is not None and total_epochs is not None:
+            progress = (epoch - 1) / max(1, total_epochs - 1)
+        else:
+            progress = None
+
         # Analyze data quality (Water)
-        water_strength = self._measure_water_strength()
+        water_strength = self._measure_water_strength(progress)
 
         # Analyze architecture complexity (Wood)
-        wood_strength = self._measure_wood_strength()
+        wood_strength = self._measure_wood_strength(progress)
 
         # Analyze training intensity (Fire)
-        fire_strength = self._measure_fire_strength()
+        fire_strength = self._measure_fire_strength(progress, water_strength, wood_strength)
 
         # Analyze regularization (Earth)
-        earth_strength = self._measure_earth_strength()
+        earth_strength = self._measure_earth_strength(progress, fire_strength)
 
         # Analyze evaluation precision (Metal)
-        metal_strength = self._measure_metal_strength()
+        metal_strength = self._measure_metal_strength(progress, earth_strength)
 
         # Create state vector
         self.current_state = WuXingStateVector(
@@ -169,260 +186,164 @@ class WuXingMechanism:
             earth_strength, metal_strength
         )
 
+        # Apply generation and conquest influences
+        if progress is not None:
+            # As training progresses, generation and conquest effects intensify
+            cycle_intensity = min(1.0, progress * 2)  # Reaches full strength by 50% of training
+
+            generation_weights = {'generation': 0.1 * cycle_intensity,
+                                  'conquest': 0.05 * cycle_intensity,
+                                  'balance': 0.02}
+
+            self.current_state = self.current_state.full_cycle_transformation(
+                weights=generation_weights, time_step=0.5)
+
         return self.current_state
 
-    def _measure_water_strength(self) -> float:
-        """
-        Measure Water element (data quality) strength
-
-        Returns:
-            Water strength value between 0 and 1
-        """
+    def _measure_water_strength(self, progress=None):
+        """Measure Water element (data quality/flow) with temporal awareness"""
         # If adapter override is available, use it
         if self._override_measure_water_strength is not None:
-            return self._override_measure_water_strength()
-
-        # In a real framework, this would analyze the dataset
-        # For now, use a simplified heuristic based on input features
-
-        # Forward pass to get input feature statistics
-        self.model.eval()
-        feature_stats = []
-
-        with torch.no_grad():
-            for batch in self.dataloader:
-                if self.dict_style_dataloader:
-                    # Dictionary-style batch
-                    input_ids = batch.get("input_ids", None)
-                    if input_ids is not None:
-                        inputs = input_ids.to(self.device)
-                    else:
-                        # Try to find first tensor in batch to use as input
-                        for k, v in batch.items():
-                            if isinstance(v, torch.Tensor) and k != "labels":
-                                inputs = v.to(self.device)
-                                break
-                else:
-                    # Tuple-style batch
-                    inputs, _ = batch
-                    inputs = inputs.to(self.device)
-
-                # Calculate feature statistics
-                if isinstance(inputs, torch.Tensor):
-                    # Flatten except batch dimension
-                    flat_inputs = inputs.view(inputs.size(0), -1)
-
-                    # Convert to float for variance calculation if needed
-                    if flat_inputs.dtype not in [torch.float, torch.double, torch.half, torch.complex64,
-                                                 torch.complex128]:
-                        flat_inputs = flat_inputs.float()
-
-                    # Calculate variance per sample
-                    var_per_sample = torch.var(flat_inputs, dim=1)
-                    feature_stats.append(var_per_sample.mean().item())
-
-                # Limit to one batch for efficiency
-                break
-
-        # Normalize to [0, 1] range with sigmoid-like function
-        if feature_stats:
-            avg_var = np.mean(feature_stats)
-            water_strength = 2 / (1 + np.exp(-avg_var * 5)) - 1  # Sigmoid-like scaling
-            return min(1.0, max(0.0, water_strength))
+            base_water = self._override_measure_water_strength()
         else:
-            return 0.5  # Default if no statistics available
+            # Implement basic water measurement here
+            base_water = self._basic_water_measurement()
 
-    def _measure_wood_strength(self) -> float:
-        """
-        Measure Wood element (architecture complexity) strength
+        if progress is None:
+            return base_water
 
-        Returns:
-            Wood strength value between 0 and 1
-        """
+        # Water follows a U-shaped curve during training:
+        # - High at beginning (fresh data)
+        # - Decreases in middle (data patterns becoming routine)
+        # - Increases at end (data mastery and flow)
+        temporal_factor = 1.0 - 0.3 * math.sin(progress * math.pi)
+
+        # Recent gradient flow indicates data quality
+        gradient_flow = self._measure_gradient_flow_smoothness()
+
+        # Calculate dynamic water strength
+        water_strength = base_water * 0.6 + temporal_factor * 0.2 + gradient_flow * 0.2
+
+        return min(1.0, max(0.1, water_strength))
+
+    def _measure_wood_strength(self, progress=None):
+        """Measure Wood element (architecture complexity/growth) with temporal awareness"""
         # If adapter override is available, use it
         if self._override_measure_wood_strength is not None:
-            return self._override_measure_wood_strength()
+            base_wood = self._override_measure_wood_strength()
+        else:
+            # Implement basic wood measurement here
+            base_wood = self._basic_wood_measurement()
 
-        # Count parameters and layers
-        total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        total_layers = sum(1 for _ in self.model.modules() if isinstance(_, (nn.Conv2d, nn.Linear)))
+        if progress is None:
+            return base_wood
 
-        # Normalize parameter count with log scaling
-        param_score = min(1.0, np.log(total_params + 1) / np.log(10 ** 8))
+        # Wood follows an early-peaking curve:
+        # - Rises in early training (architecture learning its role)
+        # - Peaks in early-middle training
+        # - Gradually declines as other elements take over
+        temporal_factor = math.sin(progress * math.pi * 0.5)  # Peaks at 50% then declines
 
-        # Normalize layer count
-        layer_score = min(1.0, np.log(total_layers + 1) / np.log(100))
+        # Feature diversity indicates architecture utilization
+        feature_diversity = self._measure_feature_representation_diversity()
 
-        # Check for advanced architectural patterns
-        has_residual = any('res' in name for name, _ in self.model.named_modules())
-        has_attention = any('attention' in name for name, _ in self.model.named_modules())
-        advanced_patterns_score = 0.5
-        if has_residual:
-            advanced_patterns_score += 0.2
-        if has_attention:
-            advanced_patterns_score += 0.3
-        advanced_patterns_score = min(1.0, advanced_patterns_score)
+        # Calculate dynamic wood strength
+        wood_strength = base_wood * 0.6 + temporal_factor * 0.2 + feature_diversity * 0.2
 
-        # Combine scores
-        wood_strength = 0.4 * param_score + 0.3 * layer_score + 0.3 * advanced_patterns_score
-        return wood_strength
+        return min(1.0, max(0.1, wood_strength))
 
-    def _measure_fire_strength(self) -> float:
-        """
-        Measure Fire element (training intensity) strength
-
-        Returns:
-            Fire strength value between 0 and 1
-        """
+    def _measure_fire_strength(self, progress=None, water=None, wood=None):
+        """Measure Fire element (training intensity) with temporal awareness"""
         # If adapter override is available, use it
         if self._override_measure_fire_strength is not None:
-            return self._override_measure_fire_strength()
-
-        # Analyze gradient magnitudes across model
-        grad_magnitudes = []
-
-        # Forward and backward pass to get gradients
-        self.model.train()
-        for batch in self.dataloader:
-            if self.dict_style_dataloader:
-                # Dictionary-style batch
-                # Move all tensors to device
-                batch_on_device = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-                                   for k, v in batch.items()}
-
-                # Extract input and target parts
-                input_dict = {k: v for k, v in batch_on_device.items() if k != "labels"}
-
-                self.model.zero_grad()
-                outputs = self.model(**input_dict)
-                loss = self.criterion(outputs, batch_on_device)
-                loss.backward()
-            else:
-                # Tuple-style batch
-                inputs, targets = batch
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-
-                self.model.zero_grad()
-                outputs = self.model(inputs)
-                loss = self.criterion(outputs, targets)
-                loss.backward()
-
-            # Collect gradient magnitudes
-            for param in self.model.parameters():
-                if param.grad is not None:
-                    grad_magnitudes.append(param.grad.abs().mean().item())
-
-            # Only process one batch
-            break
-
-        if grad_magnitudes:
-            # Normalize gradient magnitudes
-            avg_grad = np.mean(grad_magnitudes)
-            fire_strength = min(1.0, avg_grad * 10)  # Scale appropriately
+            base_fire = self._override_measure_fire_strength()
         else:
-            fire_strength = 0.5  # Default
+            # Implement basic fire measurement here
+            base_fire = self._basic_fire_measurement()
 
-        return fire_strength
+        if progress is None:
+            return base_fire
 
-    def _measure_earth_strength(self) -> float:
-        """
-        Measure Earth element (regularization/stability) strength
+        # Fire follows a bell curve centered slightly past the middle:
+        # - Low at beginning (warming up)
+        # - Peaks after middle (intense transformation)
+        # - Decreases toward end (cooling down)
+        temporal_factor = math.sin(progress * math.pi * 0.7)  # Peaks around 70% of training
 
-        Returns:
-            Earth strength value between 0 and 1
-        """
+        # Current gradient magnitude indicates training intensity
+        gradient_magnitude = self._measure_current_gradient_magnitude()
+
+        # Fire is nourished by Wood and controlled by Water
+        element_influence = 0
+        if wood is not None and water is not None:
+            element_influence = min(1.0, wood * 0.2 - water * 0.1)
+
+        # Calculate dynamic fire strength
+        fire_strength = base_fire * 0.5 + temporal_factor * 0.2 + gradient_magnitude * 0.2 + element_influence * 0.1
+
+        return min(1.0, max(0.1, fire_strength))
+
+    def _measure_earth_strength(self, progress=None, fire=None):
+        """Measure Earth element (regularization/stability) with temporal awareness"""
         # If adapter override is available, use it
         if self._override_measure_earth_strength is not None:
-            return self._override_measure_earth_strength()
+            base_earth = self._override_measure_earth_strength()
+        else:
+            # Implement basic earth measurement here
+            base_earth = self._basic_earth_measurement()
 
-        # Check for regularization techniques
-        has_bn = any(isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))
-                     for m in self.model.modules())
-        has_dropout = any(isinstance(m, nn.Dropout) for m in self.model.modules())
+        if progress is None:
+            return base_earth
 
-        # Check for weight decay in optimizer
-        weight_decay = 0.0
-        # This would need to be passed in or inferred
+        # Earth follows a sigmoid curve:
+        # - Low at beginning (little stabilization needed)
+        # - Rises in middle (stabilizing the learning)
+        # - Plateaus toward end (maintaining stability)
+        temporal_factor = 1.0 / (1.0 + math.exp(-10 * (progress - 0.5)))  # Sigmoid centered at 50%
 
-        # Calculate parameter stability (low variance across layers indicates stability)
-        param_means = []
-        for param in self.model.parameters():
-            if param.requires_grad:
-                param_means.append(param.abs().mean().item())
+        # Weight stability indicates regularization effectiveness
+        weight_stability = self._measure_weight_stability()
 
-        param_stability = 1.0 - min(1.0, np.std(param_means) * 10) if param_means else 0.5
+        # Earth is nourished by Fire
+        element_influence = 0
+        if fire is not None:
+            element_influence = min(1.0, fire * 0.2)
 
-        # Combine factors
-        earth_strength = 0.0
-        if has_bn:
-            earth_strength += 0.3
-        if has_dropout:
-            earth_strength += 0.3
+        # Calculate dynamic earth strength
+        earth_strength = base_earth * 0.5 + temporal_factor * 0.2 + weight_stability * 0.2 + element_influence * 0.1
 
-        earth_strength += 0.4 * param_stability
-        return min(1.0, earth_strength)
+        return min(1.0, max(0.1, earth_strength))
 
-    def _measure_metal_strength(self) -> float:
-        """
-        Measure Metal element (evaluation precision) strength
-
-        Returns:
-            Metal strength value between 0 and 1
-        """
+    def _measure_metal_strength(self, progress=None, earth=None):
+        """Measure Metal element (evaluation precision) with temporal awareness"""
         # If adapter override is available, use it
         if self._override_measure_metal_strength is not None:
-            return self._override_measure_metal_strength()
-
-        # Analyze output confidence and decision boundaries
-        output_confidences = []
-
-        self.model.eval()
-        with torch.no_grad():
-            for batch in self.dataloader:
-                if self.dict_style_dataloader:
-                    # Dictionary-style batch
-                    # Move all tensors to device
-                    input_dict = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-                                  for k, v in batch.items() if k != "labels"}
-
-                    outputs = self.model(**input_dict)
-                else:
-                    # Tuple-style batch
-                    inputs, _ = batch
-                    inputs = inputs.to(self.device)
-                    outputs = self.model(inputs)
-
-                # If model returns a dictionary, get the logits
-                if isinstance(outputs, dict) and "logits" in outputs:
-                    outputs = outputs["logits"]
-
-                # Convert to float if needed
-                if hasattr(outputs, "dtype") and outputs.dtype not in [torch.float, torch.double, torch.half]:
-                    outputs = outputs.float()
-
-                # If using softmax outputs, measure confidence
-                if hasattr(outputs, "dim") and outputs.dim() > 1 and outputs.size(1) > 1:
-                    # Apply softmax if not already done
-                    if outputs.min() < 0 or outputs.max() > 1:
-                        outputs = torch.softmax(outputs, dim=1)
-
-                    # Maximum probability as confidence
-                    max_probs, _ = outputs.max(dim=1)
-                    output_confidences.extend(max_probs.cpu().numpy().tolist())
-
-                # Limit to one batch
-                break
-
-        if output_confidences:
-            # High confidence and low variance indicates precision
-            avg_confidence = np.mean(output_confidences)
-            confidence_variance = np.var(output_confidences)
-
-            metal_strength = avg_confidence * (1 - min(1.0, confidence_variance * 10))
+            base_metal = self._override_measure_metal_strength()
         else:
-            metal_strength = 0.5  # Default
+            # Implement basic metal measurement here
+            base_metal = self._basic_metal_measurement()
 
-        return metal_strength
+        if progress is None:
+            return base_metal
+
+        # Metal follows a late-rising curve:
+        # - Low at beginning (poor evaluation)
+        # - Gradually increases throughout training
+        # - Highest at end (refined evaluation)
+        temporal_factor = math.pow(progress, 1.5)  # Accelerating curve
+
+        # Decision boundary clarity indicates evaluation precision
+        decision_clarity = self._measure_decision_boundary_clarity()
+
+        # Metal is nourished by Earth
+        element_influence = 0
+        if earth is not None:
+            element_influence = min(1.0, earth * 0.2)
+
+        # Calculate dynamic metal strength
+        metal_strength = base_metal * 0.5 + temporal_factor * 0.2 + decision_clarity * 0.2 + element_influence * 0.1
+
+        return min(1.0, max(0.1, metal_strength))
 
     def _map_param_to_element(self, param_name: str) -> int:
         """
@@ -451,6 +372,291 @@ class WuXingMechanism:
         else:
             return 0  # Water (default)
 
+    def _basic_water_measurement(self):
+        """Basic measurement of Water element without temporal factors"""
+        # Analyze input data statistics
+        data_stats = []
+
+        with torch.no_grad():
+            for batch in self.dataloader:
+                if self.dict_style_dataloader:
+                    # Dictionary-style batch
+                    inputs = next(iter([v for k, v in batch.items()
+                                        if isinstance(v, torch.Tensor) and k != "labels"]), None)
+                    if inputs is not None:
+                        inputs = inputs.to(self.device)
+                else:
+                    # Tuple-style batch
+                    inputs, _ = batch
+                    inputs = inputs.to(self.device)
+
+                # Calculate basic statistics
+                if isinstance(inputs, torch.Tensor):
+                    flat_inputs = inputs.view(inputs.size(0), -1)
+                    if flat_inputs.dtype not in [torch.float, torch.double, torch.half]:
+                        flat_inputs = flat_inputs.float()
+
+                    mean_val = flat_inputs.mean().item()
+                    std_val = flat_inputs.std().item()
+                    data_stats.append((mean_val, std_val))
+
+                # Only check one batch
+                break
+
+        # If no statistics, return default
+        if not data_stats:
+            return 0.5
+
+        # Calculate water strength based on data distribution
+        mean_val, std_val = data_stats[0]
+
+        # Normalized data has better flow (water strength)
+        is_normalized = abs(mean_val) < 0.1 and 0.1 < std_val < 10
+
+        return 0.7 if is_normalized else 0.4
+
+    def _measure_gradient_flow_smoothness(self):
+        """Measure the smoothness of gradient flow as a Water element indicator"""
+        # Collect gradient statistics
+        grad_stats = []
+
+        for name, param in self.model.parameters():
+            if param.grad is not None:
+                # Calculate gradient mean and std
+                grad_mean = param.grad.abs().mean().item()
+                grad_std = param.grad.std().item()
+                grad_stats.append((grad_mean, grad_std))
+
+        if not grad_stats:
+            return 0.5
+
+        # Calculate coefficient of variation for gradients
+        cv_values = [std / mean if mean > 0 else float('inf') for mean, std in grad_stats]
+        cv_values = [cv for cv in cv_values if not math.isinf(cv)]
+
+        if not cv_values:
+            return 0.5
+
+        # Lower CV indicates smoother gradient flow (better Water)
+        avg_cv = sum(cv_values) / len(cv_values)
+        smoothness = 1.0 / (1.0 + avg_cv)
+
+        return smoothness
+
+    def _basic_wood_measurement(self):
+        """Basic measurement of Wood element without temporal factors"""
+        # Count parameters and layers
+        total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_layers = sum(1 for _ in self.model.modules() if isinstance(_, (nn.Conv2d, nn.Linear)))
+
+        # Normalize parameter count with log scaling
+        param_score = min(1.0, np.log(total_params + 1) / np.log(10 ** 8))
+
+        # Normalize layer count
+        layer_score = min(1.0, np.log(total_layers + 1) / np.log(100))
+
+        # Combine scores
+        return 0.7 * param_score + 0.3 * layer_score
+
+    def _measure_feature_representation_diversity(self):
+        """Measure diversity of feature representations as a Wood element indicator"""
+        # Collect activation statistics from hidden layers
+        diversity_scores = []
+
+        # Forward pass to get activations
+        self.model.eval()
+        with torch.no_grad():
+            for batch in self.dataloader:
+                if self.dict_style_dataloader:
+                    # Process dictionary batch
+                    inputs = {k: v.to(self.device) for k, v in batch.items() if k != "labels"}
+                    self.model(**inputs)
+                else:
+                    # Process tuple batch
+                    inputs, _ = batch
+                    inputs = inputs.to(self.device)
+                    self.model(inputs)
+
+                # Calculate diversity from activations
+                for name, activation in self.activations.items():
+                    if isinstance(activation, torch.Tensor) and activation.dim() > 1:
+                        # Reshape to 2D: (batch_size, features)
+                        flat_act = activation.view(activation.size(0), -1)
+
+                        # Calculate correlation matrix between features
+                        if flat_act.size(1) > 1:  # Need at least 2 features
+                            # Convert to float if needed
+                            if flat_act.dtype not in [torch.float, torch.double, torch.half]:
+                                flat_act = flat_act.float()
+
+                            # Calculate correlation
+                            centered = flat_act - flat_act.mean(dim=0, keepdim=True)
+                            cov = centered.t() @ centered
+                            norm = torch.diag(1.0 / torch.sqrt(torch.diag(cov) + 1e-10))
+                            corr = norm @ cov @ norm
+
+                            # Measure diversity as 1 - average absolute correlation
+                            diversity = 1.0 - (torch.abs(corr).sum() - torch.abs(torch.diag(corr)).sum()) / (
+                                        corr.numel() - corr.size(0))
+                            diversity_scores.append(diversity.item())
+
+                # Only check one batch
+                break
+
+        if not diversity_scores:
+            return 0.5
+
+        # Average diversity scores
+        return sum(diversity_scores) / len(diversity_scores)
+
+    def _basic_fire_measurement(self):
+        """Basic measurement of Fire element without temporal factors"""
+        # Analyze gradient magnitudes
+        grad_magnitudes = []
+
+        for param in self.model.parameters():
+            if param.grad is not None:
+                grad_magnitudes.append(param.grad.abs().mean().item())
+
+        if not grad_magnitudes:
+            return 0.5
+
+        # Normalize gradient magnitude
+        avg_grad = np.mean(grad_magnitudes)
+        return min(1.0, avg_grad * 10)  # Scale appropriately
+
+    def _measure_current_gradient_magnitude(self):
+        """Measure current gradient magnitude as a Fire element indicator"""
+        # This is similar to basic fire measurement but focused on recent gradients
+        return self._basic_fire_measurement()
+
+    def _basic_earth_measurement(self):
+        """Basic measurement of Earth element without temporal factors"""
+        # Check for regularization techniques
+        has_bn = any(isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))
+                     for m in self.model.modules())
+        has_dropout = any(isinstance(m, nn.Dropout) for m in self.model.modules())
+
+        # Calculate Earth strength
+        earth_strength = 0.0
+        if has_bn:
+            earth_strength += 0.4
+        if has_dropout:
+            earth_strength += 0.4
+
+        earth_strength += 0.2  # Base level
+        return min(1.0, earth_strength)
+
+    def _measure_weight_stability(self):
+        """Measure weight stability as an Earth element indicator"""
+        # Calculate statistics of weight changes
+        stability_scores = []
+
+        for name, param in self.model.parameters():
+            if hasattr(param, '_prev_value'):
+                # Calculate relative change
+                prev = param._prev_value
+                current = param.data
+                rel_change = torch.norm(current - prev) / (torch.norm(prev) + 1e-10)
+                stability = torch.exp(-rel_change * 10).item()  # Higher for smaller changes
+                stability_scores.append(stability)
+
+            # Update previous value
+            param._prev_value = param.data.clone()
+
+        if not stability_scores:
+            return 0.5
+
+        # Average stability scores
+        return sum(stability_scores) / len(stability_scores)
+
+    def _basic_metal_measurement(self):
+        """Basic measurement of Metal element without temporal factors"""
+        # Analyze output confidence
+        confidence_scores = []
+
+        self.model.eval()
+        with torch.no_grad():
+            for batch in self.dataloader:
+                if self.dict_style_dataloader:
+                    # Process dictionary batch
+                    inputs = {k: v.to(self.device) for k, v in batch.items() if k != "labels"}
+                    outputs = self.model(**inputs)
+                else:
+                    # Process tuple batch
+                    inputs, _ = batch
+                    inputs = inputs.to(self.device)
+                    outputs = self.model(inputs)
+
+                # Get logits if outputs is a dictionary
+                if isinstance(outputs, dict) and "logits" in outputs:
+                    outputs = outputs["logits"]
+
+                # Calculate confidence
+                if hasattr(outputs, "dim") and outputs.dim() > 1 and outputs.size(1) > 1:
+                    # Apply softmax if needed
+                    if outputs.min() < 0 or outputs.max() > 1:
+                        outputs = torch.softmax(outputs, dim=1)
+
+                    # Maximum probability as confidence
+                    max_probs, _ = outputs.max(dim=1)
+                    confidence_scores.extend(max_probs.cpu().numpy().tolist())
+
+                # Only check one batch
+                break
+
+        if not confidence_scores:
+            return 0.5
+
+        # Average confidence
+        avg_confidence = np.mean(confidence_scores)
+        return avg_confidence
+
+    def _measure_decision_boundary_clarity(self):
+        """Measure decision boundary clarity as a Metal element indicator"""
+        # Similar to basic metal measurement but focused on decision margins
+        confidence_scores = []
+        margin_scores = []
+
+        self.model.eval()
+        with torch.no_grad():
+            for batch in self.dataloader:
+                if self.dict_style_dataloader:
+                    # Process dictionary batch
+                    inputs = {k: v.to(self.device) for k, v in batch.items() if k != "labels"}
+                    outputs = self.model(**inputs)
+                else:
+                    # Process tuple batch
+                    inputs, _ = batch
+                    inputs = inputs.to(self.device)
+                    outputs = self.model(inputs)
+
+                # Get logits if outputs is a dictionary
+                if isinstance(outputs, dict) and "logits" in outputs:
+                    outputs = outputs["logits"]
+
+                # Calculate decision margins
+                if hasattr(outputs, "dim") and outputs.dim() > 1 and outputs.size(1) > 1:
+                    # Get top two probabilities
+                    if outputs.min() < 0 or outputs.max() > 1:
+                        probs = torch.softmax(outputs, dim=1)
+                    else:
+                        probs = outputs
+
+                    # Get margin between top two predictions
+                    top_values, _ = torch.topk(probs, k=2, dim=1)
+                    margins = top_values[:, 0] - top_values[:, 1]
+                    margin_scores.extend(margins.cpu().numpy().tolist())
+
+                # Only check one batch
+                break
+
+        if not margin_scores:
+            return 0.5
+
+        # Average margin
+        avg_margin = np.mean(margin_scores)
+        return min(1.0, avg_margin * 2)  # Scale appropriately
     def identify_mechanism_points(self, top_k: int = 5) -> Dict[str, Dict]:
         """
         Identify the top mechanism points in the neural network
